@@ -1,0 +1,30 @@
+services:
+  nginx:
+    image: nginx-i
+    container_name: ${NGINX_HOST}
+    build:
+      context: nginx
+      dockerfile: Dockerfile
+      args:
+        ENABLED_MODULES: rtmp
+    env_file: .env
+    ports:
+      - "${HTTP_PORT}:${HTTP_PORT}"
+      - "${RTMP_PORT}:${RTMP_PORT}"
+
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/rtmp.conf:/etc/nginx/templates/rtmp.conf.template
+      - ./nginx/http.conf:/etc/nginx/templates/http.conf.template
+      - ./nginx/index.html:/usr/share/nginx/html/index.html
+
+  ffmpeg:
+    image: ffmpeg-i
+    container_name: ${FFMPEG_PATH}
+    build:
+      context: ./ffmpeg
+      dockerfile: Dockerfile
+    env_file: .env
+
+    depends_on:
+      - nginx
