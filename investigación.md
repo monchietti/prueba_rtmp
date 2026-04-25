@@ -1,173 +1,38 @@
-# Informe de Investigación: Servidor de Streaming con Nginx y RTMP
+# Informe de Arquitectura - Sistema de Streaming en Vivo
 
-## 1. Introducción
+## 1. Visión General del Sistema
 
-Este documento presenta un análisis técnico del sistema de streaming desarrollado, el cual utiliza **Nginx** como servidor web y de streaming, configurado con el módulo **RTMP** (Real-Time Messaging Protocol) para manejar flujos de video en vivo.
-
----
-
-## 2. ¿Qué es Nginx?
-
-### 2.1 Definición
-
-**Nginx** (se pronuncia "engine-x") es un servidor web de código abierto desarrollado por Igor Sysoev en 2004. Originalmente fue diseñado para resolver el problema C10K (manejar 10,000 conexiones simultáneas), lo que lo convierte en una solución altamente eficiente para servidores de alto rendimiento.
-
-### 2.2 Características Principales
-
-| Característica | Descripción |
-|----------------|-------------|
-| **Rendimiento** | Arquitectura orientada a eventos (event-driven), no bloqueante |
-| **Uso de memoria** | Bajo consumo de recursos comparado con Apache |
-| **Funcionalidad** | Servidor web, proxy reverso, balanceador de carga, cache |
-| **Escalabilidad** | Maneja miles de conexiones simultáneas con poco uso de memoria |
-| **Modularidad** | Sistema de módulos para extender funcionalidad |
-
-### 2.3 Usos Comunes
-
-- Servidor web estático
-- Proxy reverso para aplicaciones
-- Balanceador de carga
-- Servidor de streaming (con módulos adicionales)
-- Cache de contenido estático
-
----
-
-## 3. Arquitectura del Proyecto
-
-### 3.1 Componentes
+Este proyecto implementa un servidor de streaming en vivo utilizando Nginx con el módulo RTMP, combinado con un frontend Angular para la reproducción del stream y un script Python para procesamiento adicional.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    docker-compose.yaml                      │
-├──────────────────────────┬──────────────────────────────────┤
-│     Servicio Nginx       │        Servicio FFmpeg          │
-│  ┌────────────────────┐  │  ┌────────────────────────────┐  │
-│  │ Servidor Web/HTTP  │  │  │ Encoder de Video           │  │
-│  │ Servidor RTMP      │  │  │ (Captura y codificación)   │  │
-│  │ Módulo HLS         │  │  │                             │  │
-│  └────────────────────┘  │  └────────────────────────────┘  │
-└──────────────────────────┴──────────────────────────────────┘
-```
-
-### 3.2 Flujo de Datos
-
-```
-Cámara/Fuente de Video
-        │
-        ▼
-┌───────────────────┐
-│   FFmpeg          │ ◄── Codifica y envía stream
-│   (Productor)     │
-└───────────────────┘
-        │
-        ▼ (Protocolo RTMP)
-┌───────────────────┐
-│   Nginx + RTMP    │ ◄── Servidor de streaming
-│   (Servidor)      │
-└───────────────────┘
-        │
-        ├──► Almacenamiento HLS (/tmp/hls)
-        │
-        ▼ (HTTP)
-┌───────────────────┐
-│   Cliente         │ ◄── Reproduce via HLS
-│   (Consumidor)    │
-└───────────────────┘
+┌─────────────┐     RTMP      ┌─────────────┐    HLS     ┌─────────────┐
+│  OBS/Fuente │ ─────────────▶│    Nginx    │ ──────────▶│  Reproduc.  │
+│  de Video   │               │  + RTMP     │            │  Angular    │
+└─────────────┘               │  + HLS       │            └─────────────┘
+                              └─────────────┘
+                                     │
+                                     ▼
+                              ┌─────────────┐
+                              │   Python    │
+                              │   Script    │
+                              └─────────────┘
 ```
 
 ---
 
-## 4. Análisis del Dockerfile
+## 2. Arquitectura de Nginx con Módulo RTMP
 
-### 4.1 Estructura Multi-Stage
+### 2.1 Componentes Principales
 
-El Dockerfile utiliza una construcción de **múltiples etapas** (multi-stage build):
+| Componente | Descripción |
+|------------|-------------|
+| **Nginx** | Servidor web/base |
+| **ngx_rtmp_module** | Módulo que añade soporte para protocolo RTMP |
+| **HLS (HTTP Live Streaming)** | Protocolo de streaming adaptativo |
 
-```dockerfile
-FROM ${NGINX_FROM_IMAGE} AS builder  # Etapa 1: Constructor
-# ... compilación de módulos ...
+### 2.2 Configuración Base de Nginx
 
-FROM ${NGINX_FROM_IMAGE}            # Etapa 2: Imagen final
-# ... instalación de módulos ...
-```
-
-### 4.2 Etapa 1: Builder
-
-**Propósito**: Compilar el módulo RTMP para nginx desde el código fuente.
-
-**Pasos principales**:
-
-1. **Verificación de parámetros**:
-   ```dockerfile
-   RUN if [ "$ENABLED_MODULES" = "" ]; then \
-       echo "No additional modules enabled, exiting"; \
-       exit 1; \
-   fi
-   ```
-   - Verifica que se especifiquen los módulos a compilar
-   - Si no hay módulos, aborta el build
-
-2. **Instalación de dependencias**:
-   ```dockerfile
-   apt-get install -y patch make wget git devscripts debhelper dpkg-dev ...
-   ```
-   - Instala herramientas necesarias para compilar
-   - build-essential: Compiladores y herramientas de build
-   - git: Control de versiones para clonar repositorios
-   - debhelper: Herramientas para crear paquetes Debian
-
-3. **Verificación de seguridad (XSLScript)**:
-   ```dockerfile
-   XSLSCRIPT_SHA512="f7194c5198daeab9b3b0c3aebf006922c7df1d345d..."
-   wget -O /tmp/xslscript.pl https://raw.githubusercontent.com/...
-   if [ "$(cat /tmp/xslscript.pl | openssl sha512 -r)" = "$XSLSCRIPT_SHA512" ]; then
-   ```
-   - Descarga un script necesario para la compilación
-   - Verifica su integridad mediante checksum SHA512
-   - Previene la ejecución de código malicioso
-
-4. **Clonación del repositorio pkg-oss**:
-   ```dockerfile
-   git clone -b ${NGINX_VERSION}-${PKG_RELEASE%%~*} https://github.com/nginx/pkg-oss/
-   ```
-   - Clona el repositorio oficial de nginx para construir módulos
-   - Usa una versión específica basada en NGINX_VERSION
-
-5. **Compilación de módulos**:
-   ```dockerfile
-   for module in $ENABLED_MODULES; do
-       /pkg-oss/build_module.sh -v $NGINX_VERSION -f -y -o /tmp/packages -n $module ...
-   done
-   ```
-   - Itera sobre cada módulo especificado en ENABLED_MODULES
-   - Compila cada módulo usando el script oficial de nginx
-   - Almacena los paquetes .deb resultantes en /tmp/packages
-
-### 4.3 Etapa 2: Imagen Final
-
-**Propósito**: Crear una imagen ligera con los módulos compilados.
-
-```dockerfile
-FROM ${NGINX_FROM_IMAGE}
-RUN --mount=type=bind,target=/tmp/packages/,source=/tmp/packages/,from=builder \
-    apt-get update \
-    && . /tmp/packages/modules.env \
-    && for module in $BUILT_MODULES; do
-           apt-get install --no-install-suggests --no-install-recommends -y /tmp/packages/nginx-module-${module}_${NGINX_VERSION}*.deb;
-       done
-```
-
-**Características**:
-- Utiliza BuildKit mount para compartir archivos entre etapas
-- Instala los paquetes .deb compilados en la etapa anterior
-- No instala dependencias de build (reduce tamaño)
-- Limpia caché de apt para minimizar tamaño final
-
----
-
-## 5. Configuración de Nginx
-
-### 5.1 nginx.conf (Configuración Principal)
+Ubicación: [nginx/nginx.conf](nginx/nginx.conf)
 
 ```nginx
 load_module /etc/nginx/modules/ngx_rtmp_module.so;
@@ -179,233 +44,294 @@ error_log /var/log/nginx/error.log notice;
 pid /var/run/nginx.pid;
 
 events {
-    worker_connections 1024;
+    worker_connections 1024; # Número máximo de conexiones simultáneas
 }
 
-include /etc/nginx/conf.d/rtmp.conf;
-include /etc/nginx/conf.d/http.conf;
+include /etc/nginx/conf.d/rtmp.conf; # Incluir configuración RTMP
+include /etc/nginx/conf.d/http.conf; # Incluir configuración HTTP
 ```
 
-**Explicación de directivas**:
+#### Explicación de Directivas:
 
 | Directiva | Descripción |
 |-----------|-------------|
-| `load_module` | Carga el módulo RTMP compilado dinámicamente |
-| `user root` | Usuario que ejecuta los procesos de nginx |
-| `worker_processes auto` | Número de procesos worker (auto = núcleos de CPU) |
-| `error_log` | Ubicación del archivo de logs de errores |
-| `worker_connections` | Máximo de conexiones por proceso worker |
-| `include` | Incluye archivos de configuración adicionales |
+| **`load_module`** | Carga dinámicamente el módulo RTMP en tiempo de ejecución |
+| **`user root`** | Usuario que ejecuta los worker processes |
+| **`worker_processes auto`** | Nginx crea automáticamente tantos procesos worker como núcleos de CPU tenga el sistema |
+| **`error_log`** | Define la ubicación y nivel de detalle para los logs de errores |
+| **`pid`** | Archivo que almacena el ID del proceso maestro de Nginx |
+| **`worker_connections`** | Número máximo de conexiones simultáneas por cada worker (1024 = hasta 1024 clientes por worker) |
+| **`include`** | Inserta el contenido de otros archivos de configuración (rtmp.conf y http.conf) |
 
-### 5.2 rtmp.conf (Configuración RTMP)
+#### Funcionamiento del Include:
+
+```
+nginx.conf
+    │
+    ├── load_module ngx_rtmp_module.so  ← Carga el módulo RTMP
+    │
+    ├── include /etc/nginx/conf.d/rtmp.conf   ← Configuración RTMP (puerto 1935)
+    │
+    └── include /etc/nginx/conf.d/http.conf   ← Configuración HTTP (puerto 5555)
+```
+
+> **Nota**: El orden es importante. Primero se carga el módulo RTMP, luego se incluyen las configuraciones que lo utilizan.
+
+### 2.3 Configuración RTMP
+
+Ubicación: [nginx/rtmp.conf](nginx/rtmp.conf)
 
 ```nginx
 rtmp {
     server {
-        listen ${RTMP_PORT};
+        listen ${RTMP_PORT};        # Puerto 1935 por defecto
         chunk_size 4096;
         allow publish all;
         
         application hls {
-            live on;
-            record off;
+            live on;                 # Modo en vivo habilitado
+            record off;              # Sin grabación
             
-            hls on;
-            hls_path /tmp/hls;
-            hls_fragment 1;
+            hls on;                  # Habilitar transcodificación HLS
+            hls_path /tmp/hls;      # Directorio para segmentos .ts
+            hls_fragment 1;          # Duración de cada segmento (segundos)
+            hls_playlist_length 2;  # Número de segmentos en la playlist
         }
     }
 }
 ```
 
-**Análisis por directiva**:
+#### Parámetros Clave:
 
-#### Nivel servidor RTMP
+- **`listen ${RTMP_PORT}`**: Puerto donde Nginx acepta conexiones RTMP (1935)
+- **`chunk_size 4096`**: Tamaño del chunk para la transferencia de datos
+- **`application hls`**: Define una aplicación llamada "hls" que procesa streams
+- **`hls on`**: Activa la conversión automática de RTMP a HLS
+- **`hls_path /tmp/hls`**: Ruta donde se almacenan los segmentos .ts y archivos .m3u8
 
-| Directiva | Función |
-|-----------|---------|
-| `listen ${RTMP_PORT}` | Puerto donde escucha conexiones RTMP (default: 1935) |
-| `chunk_size 4096` | Tamaño de cada chunk de datos (4KB) |
-| `allow publish all` | Permite publicar desde cualquier origen |
+### 2.3 Configuración HTTP para HLS
 
-#### Nivel aplicación (application hls)
-
-| Directiva | Función |
-|-----------|---------|
-| `live on` | Habilita modo de streaming en vivo |
-| `record off` | Desactiva grabación del stream |
-| `hls on` | Activa HTTP Live Streaming |
-| `hls_path /tmp/hls` | Directorio donde se guardan segmentos HLS |
-| `hls_fragment 1` | Duración de cada fragmento en segundos |
-
-### 5.3 http.conf (Configuración HTTP)
+Ubicación: [nginx/http.conf](nginx/http.conf)
 
 ```nginx
 http {
     server {
         listen ${HTTP_PORT};
-        server_name ${NGINX_HOST};
-
-        location / {
-            root /usr/share/nginx/html;
-            try_files $uri /index.html;
-        }
-
+        
         location /hls {
+            root /tmp;
+            
+            # Tipos MIME para HLS
             types {
                 application/vnd.apple.mpegurl m3u8;
                 video/mp2t ts;
             }
-            root /tmp;
+            
+            add_header Access-Control-Allow-Origin *;
+            add_header Cache-Control no-cache;
         }
     }
 }
 ```
 
-**Análisis**:
+#### Flujo de Conversión RTMP → HLS:
 
-#### Servidor HTTP
+```
+1. Cliente RTMP (OBS) ──envía stream──▶ Nginx (puerto 1935)
+2. Nginx RTMP module ──recibe flujo──▶ 
+3. Transcodificador interno ──convierte a──▶ Segmentos .ts (1 segundo)
+4. Generador playlist ──crea──▶ Archivo .m3u8
+5. Cliente HTTP ──solicita──▶ Nginx (puerto 5555) ──entrega──▶ .m3u8 / .ts
+```
 
-| Directiva | Descripción |
-|-----------|-------------|
-| `listen ${HTTP_PORT}` | Puerto HTTP (default: 80) |
-| `server_name` | Nombre del servidor (desde variable de entorno) |
+### 2.4 Dockerfile de Nginx
 
-#### Location / (Página web estática)
+Ubicación: [nginx/Dockerfile](nginx/Dockerfile)
 
-| Directiva | Descripción |
-|-----------|-------------|
-| `root /usr/share/nginx/html` | Directorio raíz para archivos estáticos |
-| `try_files $uri /index.html` | Busca archivo exacto, si no existe usa index.html |
+El contenedor se construye con el módulo RTMP habilitado:
 
-#### Location /hls (Streaming HLS)
-
-| Directiva | Descripción |
-|-----------|-------------|
-| `types` | Define tipos MIME para archivos HLS |
-| `application/vnd.apple.mpegurl m3u8` | Archivo de lista de reproducción M3U8 |
-| `video/mp2t ts` | Segmentos de video Transport Stream |
-| `root /tmp` | Sirve archivos desde /tmp (donde nginx RTMP escribe HLS) |
+```dockerfile
+FROM nginx:latest
+RUN apt-get update && apt-get install -y nginx-full-modules-meta
+```
 
 ---
 
-## 6. Docker Compose
+## 3. Script Python para Captura de Stream
 
-### 6.1 Servicio Nginx
+### 3.1 Propósito
+
+El script Python se conecta al stream HLS generado por Nginx y permite:
+- Capturar frames del video en vivo
+- Procesar cada frame (detección de movimiento, análisis, etc.)
+- Mostrar el stream en ventana de visualización
+
+### 3.2 Código Fuente
+
+Ubicación: [python_script/main.py](python_script/main.py)
+
+```python
+import cv2
+
+hls_url = "http://localhost:5555/hls/my-stream.m3u8"
+
+cap = cv2.VideoCapture(hls_url)
+
+if not cap.isOpened():
+    print("Error: no se pudo abrir el stream HLS")
+    exit()
+
+while True:
+    ret, frame = cap.read()
+
+    if not ret:
+        print("No hay frame (buffering o corte)")
+        break
+
+    cv2.imshow("HLS Stream", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+```
+
+### 3.3 Funcionamiento Detallado
+
+| Paso | Descripción |
+|------|-------------|
+| **1. URL del Stream** | `http://localhost:5555/hls/my-stream.m3u8`指向 Nginx生成的HLS播放列表 |
+| **2. cv2.VideoCapture** | OpenCV se conecta al stream como si fuera un archivo de video local |
+| **3. Lectura de Frames** | `cap.read()` obtiene cada frame del stream HLS |
+| **4. Visualización** | `cv2.imshow()` muestra el frame en una ventana |
+| **5. Control** | Presionar 'q' sale del bucle y cierra ventanas |
+
+### 3.4 Dependencias
+
+Ubicación: [python_script/requirements.txt](python_script/requirements.txt)
+
+```
+opencv-python
+```
+
+> **Nota**: OpenCV puede reproducir streams HLS nativamente en la mayoría de los casos, pero la estabilidad depende del códec utilizado.
+
+---
+
+## 4. Docker Compose - Orquestación
+
+Ubicación: [docker-compose.yaml](docker-compose.yaml)
 
 ```yaml
-nginx:
+services:
+  nginx:
     image: nginx-i
     build:
       context: nginx
       dockerfile: Dockerfile
       args:
         ENABLED_MODULES: rtmp
-    env_file: .env
     ports:
-      - "${HTTP_PORT}:${HTTP_PORT}"
-      - "${RTMP_PORT}:${RTMP_PORT}"
+      - "${HTTP_PORT}:${HTTP_PORT}"    # 5555
+      - "${RTMP_PORT}:${RTMP_PORT}"    # 1935
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./nginx/rtmp.conf:/etc/nginx/templates/rtmp.conf.template
       - ./nginx/http.conf:/etc/nginx/templates/http.conf.template
-      - ./nginx/index.html:/usr/share/nginx/html/index.html
 ```
 
-**Puertos expuestos**:
-- **HTTP_PORT**: Para servir contenido web y HLS
-- **RTMP_PORT**: Para recibir streams de FFmpeg
+### Puertos Expuestos:
 
-**Volúmenes montados**:
-- `nginx.conf`: Configuración principal
-- `rtmp.conf` y `http.conf`: Plantillas para Docker
-- `index.html`: Página web estática
-
-### 6.2 Servicio FFmpeg
-
-```yaml
-ffmpeg:
-    image: ffmpeg-i
-    build:
-      context: ./ffmpeg
-      dockerfile: Dockerfile
-    depends_on:
-      - nginx
-```
-
-**Propósito**: Producer de video que captura/entrena y envía stream al servidor Nginx.
+| Puerto | Protocolo | Propósito |
+|--------|-----------|-----------|
+| **1935** | RTMP | Recepción de streams desde OBS/u otros |
+| **5555** | HTTP | Entrega de archivos HLS (.m3u8, .ts) |
 
 ---
 
-## 7. Protocolo RTMP y HLS
+## 5. Frontend Angular - Reproducción
 
-### 7.1 RTMP (Real-Time Messaging Protocol)
+### 5.1 Componente VideoPlayer
 
-- **Desarrollado por**: Macromedia/Adobe
-- **Puerto default**: 1935
-- **Uso**: Streaming en tiempo real de bajo latency
-- **Transporte**: TCP con chunks variables
+Ubicación: [frontend/mi-app/src/app/video-player/](frontend/mi-app/src/app/video-player/)
 
-### 7.2 HLS (HTTP Live Streaming)
+El frontend utiliza **HLS.js** para reproducir el stream en el navegador:
 
-- **Desarrollado por**: Apple
-- **Protocolo**: HTTP (sin puertos especiales)
-- **Funcionamiento**:
-  1. El servidor fragmenta el stream en chunks .ts
-  2. Genera un archivo de lista .m3u8
-  3. El cliente descarga la lista y los segmentos
-- **Ventajas**: Funciona a través de firewalls y CDNs
-- **Desventaja**: Mayor latencia que RTMP (~10-30 segundos)
+```typescript
+import Hls from 'hls.js';
+
+if (Hls.isSupported()) {
+  const hls = new Hls();
+  hls.loadSource('http://localhost:5555/hls/my-stream.m3u8');
+  hls.attachMedia(video);
+}
+```
+
+### 5.2 Flujo Completo de Streaming
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   OBS        │     │   Nginx      │     │   Archivos   │     │  Angular    │
+│  (Publicador)│────▶│   (RTMP:1935) │────▶│   HLS        │────▶│  (HLS.js)   │
+│              │     │              │     │  (/tmp/hls)  │     │             │
+└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
+                            │                    │
+                            │                    ▼
+                            │             ┌──────────────┐
+                            │             │   Python     │
+                            │             │   (OpenCV)   │
+                            │             └──────────────┘
+                            │
+                            ▼
+                     ┌──────────────┐
+                     │  Python      │
+                     │  Script      │
+                     │  (Opcional)  │
+                     └──────────────┘
+```
 
 ---
 
-## 8. Variables de Entorno (.env)
+## 6. Casos de Uso
 
-El sistema utiliza un archivo `.env` para configuración:
+### 6.1 Publicar Stream (OBS)
+1. Configurar OBS → Servidor de streaming: `rtmp://localhost:1935/hls`
+2. Clave de stream: cualquier valor
+3. Nginx recibe el stream y lo convierte a HLS
 
-```
-NGINX_HOST=nombre_del_contenedor
+### 6.2 Reproducir en Navegador
+1. Angular carga `http://localhost:5555/hls/my-stream.m3u8`
+2. HLS.js descarga segmentos y los reproduce
+
+### 6.3 Procesar con Python
+1. Ejecutar `python main.py`
+2. OpenCV captura frames del stream HLS
+3. Se puede agregar procesamiento (detección de objetos, etc.)
+
+---
+
+## 7. Variables de Entorno
+
+Definidas en `.env`:
+
+```env
+NGINX_HOST=nginx-rtmp
+HTTP_PORT=5555
 RTMP_PORT=1935
-HTTP_PORT=80
-FFMPEG_PATH=ffmpeg_encoder
 ```
 
 ---
 
-## 9. Conclusiones
+## 8. Limitaciones y Mejoras
 
-### 9.1 Resumen del Sistema
+### Limitaciones Actuales:
+- Solo un stream simultáneo (configuración básica)
+- Sin autenticación en RTMP
+- Sin transcodificación a múltiples calidades
 
-Este proyecto implementa un servidor de streaming completo utilizando:
-
-1. **Nginx** como servidor base de alto rendimiento
-2. **Módulo RTMP** para recibir streams en tiempo real
-3. **Conversión a HLS** para compatibilidad con reproductores web
-4. **Docker** para containerización y despliegue
-
-### 9.2 Casos de Uso
-
-- Streaming en vivo (live streaming)
-- Transmisión de eventos
-- Video bajo demanda (VOD) con grabación
-- Servidor de replicación para redes de distribución (CDN)
-
-### 9.3 Ventajas del Diseño
-
-- **Escalabilidad**: Fácil de replicar con Docker Compose
-- **Modularidad**: El Dockerfile permite agregar más módulos
-- **Compatibilidad**: HLS funciona en todos los navegadores y móviles
-- **Simplicidad**: Configuración clara y separada
-
----
-
-## 10. Referencias
-
-- [Nginx Official Documentation](https://nginx.org/en/docs/)
-- [nginx-rtmp-module](https://github.com/arut/nginx-rtmp-module)
-- [Docker Multi-stage Builds](https://docs.docker.com/develop/develop-images/multistage-build/)
-- [HLS Specification](https://datatracker.ietf.org/doc/html/rfc8216)
-
----
-
-*Informe generado el 25 de abril de 2026*
+### Mejoras Posibles:
+- Implementar FFmpeg para múltiples resoluciones
+- Agregar autenticación RTMP
+- Almacenamiento de streams en disco
+- API de control para iniciar/detener streams
