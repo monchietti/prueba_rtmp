@@ -201,7 +201,7 @@ cv2.destroyAllWindows()
 
 | Paso | Descripción |
 |------|-------------|
-| **1. URL del Stream** | `http://localhost:5555/hls/my-stream.m3u8`指向 Nginx生成的HLS播放列表 |
+| **1. URL del Stream** | `http://localhost:5555/hls/my-stream.m3u8` |
 | **2. cv2.VideoCapture** | OpenCV se conecta al stream como si fuera un archivo de video local |
 | **3. Lectura de Frames** | `cap.read()` obtiene cada frame del stream HLS |
 | **4. Visualización** | `cv2.imshow()` muestra el frame en una ventana |
@@ -335,3 +335,106 @@ RTMP_PORT=1935
 - Agregar autenticación RTMP
 - Almacenamiento de streams en disco
 - API de control para iniciar/detener streams
+
+---
+
+## 9. Múltiples Transmisiones Simultáneas
+
+### 9.1 Estado Actual
+
+La configuración actual ya **soporta múltiples streams** automáticamente. No es necesario modificar la configuración base.
+
+```nginx
+application hls {
+    live on;           # Cada stream publicado crea su propio canal
+    hls_path /tmp/hls; # Los archivos se organizan por nombre de stream
+}
+```
+
+### 9.2 Cómo Funciona
+
+Nginx RTMP crea **automáticamente** un canal separado por cada stream publicado:
+
+| Cliente | URL RTMP | URL HLS Resultante |
+|---------|----------|-------------------|
+| OBS 1 | `rtmp://localhost:1935/hls/stream1` | `http://localhost:5555/hls/stream1.m3u8` |
+| OBS 2 | `rtmp://localhost:1935/hls/stream2` | `http://localhost:5555/hls/stream2.m3u8` |
+| OBS 3 | `rtmp://localhost:1935/hls/stream3` | `http://localhost:5555/hls/stream3.m3u8` |
+
+#### Estructura de Archivos en `/tmp/hls`:
+
+```
+/tmp/hls/
+    ├── stream1.m3u8      # Playlist del stream 1
+    ├── stream1-0.ts      # Segmento 0 del stream 1
+    ├── stream1-1.ts      # Segmento 1 del stream 1
+    │
+    ├── stream2.m3u8      # Playlist del stream 2
+    ├── stream2-0.ts
+    ├── stream2-1.ts
+    │
+    └── stream3.m3u8      # Playlist del stream 3
+        ├── stream3-0.ts
+        └── stream3-1.ts
+```
+
+### 9.3 Configuración para Múltiples Streams
+
+La configuración actual ya permite múltiples streams. Para mejor gestión, se puede ajustar:
+
+```nginx
+rtmp {
+    server {
+        listen 1935;
+        chunk_size 4096;
+        allow publish all;
+        
+        application hls {
+            live on;
+            record off;
+            
+            # Configuración HLS optimizada para múltiples streams
+            hls on;
+            hls_path /tmp/hls;
+            hls_fragment 2;        # Segmentos de 2 segundos
+            hls_playlist_length 6; # 6 segmentos en playlist (~12 seg)
+            
+            # Opcional: límite de conexiones simultáneas
+            max_connections 100;
+        }
+    }
+}
+```
+
+### 9.4 Recomendaciones para Múltiples Streams
+
+| Aspecto | Recomendación |
+|---------|----------------|
+| **Ancho de banda** | Asegurar suficiente bandwidth (mínimo 5-10 Mbps por stream) |
+| **Almacenamiento** | Montar volumen Docker en disco para persistencia |
+| **CPU** | Más streams = más CPU necesario para transcodificación |
+| **Memoria** | Aumentar `worker_connections` si hay muchos espectadores |
+
+### 9.5 Ejemplo de Uso con Múltiples Streams
+
+```bash
+# Stream 1 desde OBS
+rtmp://localhost:1935/hls/canal_deportes
+
+# Stream 2 desde otra fuente
+rtmp://localhost:1935/hls/canal_noticias
+
+# Stream 3
+rtmp://localhost:1935/hls/canal_musica
+
+# Reproducción en Angular
+http://localhost:5555/hls/canal_deportes.m3u8
+http://localhost:5555/hls/canal_noticias.m3u8
+http://localhost:5555/hls/canal_musica.m3u8
+```
+
+### 9.6 Limitaciones a Considerar
+
+- **Sin autenticación**: Cualquiera puede publicar en cualquier canal
+- **Sin transcodificación**: Todos los streams se convierten con el mismo códec
+- **Sin DVR**: No hay capacidad de grabar streams para ver después

@@ -12,7 +12,7 @@ export class VideoPlayer implements AfterViewInit {
 
   @ViewChild('videoPlayer', { static: false }) video!: ElementRef<HTMLVideoElement>;
 
-  streamUrl = 'http://localhost:5555/hls/my-stream.m3u8';
+  streamUrl = 'http://192.168.2.101:5555/hls/valen.m3u8';
 
   ngAfterViewInit(): void {
     const video = this.video.nativeElement;
@@ -26,14 +26,6 @@ export class VideoPlayer implements AfterViewInit {
         video.play();
       });
 
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari (soporte nativo)
-      video.src = this.streamUrl;
-      video.addEventListener('loadedmetadata', () => {
-        video.play();
-      });
-    } else {
-      console.error('HLS no soportado en este navegador');
-    }
+    } 
   }
 }

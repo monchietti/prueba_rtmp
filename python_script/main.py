@@ -1,6 +1,6 @@
 import cv2
 
-hls_url = "http://localhost:5555/hls/my-stream.m3u8"
+hls_url = "http://localhost:5555/hls/monchietti.m3u8"
 
 cap = cv2.VideoCapture(hls_url)
 

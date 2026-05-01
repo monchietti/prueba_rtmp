@@ -16,4 +16,14 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./nginx/rtmp.conf:/etc/nginx/templates/rtmp.conf.template
       - ./nginx/http.conf:/etc/nginx/templates/http.conf.template
-      - ./nginx/index.html:/usr/share/nginx/html/index.html
+
+  ffmpeg:
+    image: ffmpeg-i
+    container_name: ${FFMPEG_PATH}
+    build:
+      context: ./ffmpeg
+      dockerfile: Dockerfile
+    env_file: .env
+
+    depends_on:
+      - nginx
